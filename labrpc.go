@@ -6,10 +6,6 @@ package labrpc
 // simulates a network that can lose requests, lose replies,
 // delay messages, and entirely disconnect particular hosts.
 //
-// we will use the original labrpc.go to test your code for grading.
-// so, while you can modify this code to help you debug, please
-// test against the original before submitting.
-//
 // adapted from Go net/rpc/server.go.
 //
 // sends labgob-encoded values to ensure that RPCs
@@ -132,6 +128,7 @@ func (e *ClientEnd) Call(svcMeth string, args any, reply any) bool {
 }
 
 type Network struct {
+	// TODO: better comments
 	mu             sync.Mutex
 	reliable       bool
 	longDelays     bool               // pause a long time on send on disabled connection
@@ -140,10 +137,10 @@ type Network struct {
 	enabled        map[any]bool       // by end name
 	servers        map[any]*Server    // servers, by name
 	connections    map[any]any        // endname -> servername
-	endCh          chan reqMsg
-	done           chan struct{} // closed when Network is cleaned up
-	count          int32         // total RPC count, for statistics
-	bytes          int64         // total bytes send, for statistics
+	endCh          chan reqMsg        //
+	done           chan struct{}      // closed when Network is cleaned up
+	count          atomic.Int32       // total RPC count, for statistics
+	bytes          atomic.Int64       // total bytes send, for statistics
 }
 
 func MakeNetwork() *Network {
@@ -161,8 +158,8 @@ func MakeNetwork() *Network {
 		for {
 			select {
 			case xreq := <-rn.endCh:
-				atomic.AddInt32(&rn.count, 1)
-				atomic.AddInt64(&rn.bytes, int64(len(xreq.args)))
+				rn.count.Add(1)
+				rn.bytes.Add(int64(len(xreq.args)))
 				go rn.processReq(xreq)
 			case <-rn.done:
 				return
@@ -305,11 +302,11 @@ func (rn *Network) processReq(req reqMsg) {
 			// the number of goroutines, so that the race
 			// detector is less likely to get upset.
 			time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
-				atomic.AddInt64(&rn.bytes, int64(len(reply.reply)))
+				rn.bytes.Add(int64(len(reply.reply)))
 				req.replyCh <- reply
 			})
 		} else {
-			atomic.AddInt64(&rn.bytes, int64(len(reply.reply)))
+			rn.bytes.Add(int64(len(reply.reply)))
 			req.replyCh <- reply
 		}
 	} else {
@@ -405,12 +402,12 @@ func (rn *Network) GetCount(servername any) int {
 }
 
 func (rn *Network) GetTotalCount() int {
-	x := atomic.LoadInt32(&rn.count)
+	x := rn.count.Load()
 	return int(x)
 }
 
 func (rn *Network) GetTotalBytes() int64 {
-	x := atomic.LoadInt64(&rn.bytes)
+	x := rn.bytes.Load()
 	return x
 }
 
