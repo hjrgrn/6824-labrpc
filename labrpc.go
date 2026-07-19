@@ -65,11 +65,11 @@ const (
 )
 
 type reqMsg struct {
-	endname  any    // Name of sending ClientEnd
-	svcMeth  string // e.g. "Raft.AppendEntries".
-	argsType reflect.Type
-	args     []byte
-	replyCh  chan replyMsg
+	clientEndName any    // Name of sending ClientEnd
+	svcMeth       string // e.g. "Raft.AppendEntries".
+	argsType      reflect.Type
+	args          []byte
+	replyCh       chan replyMsg
 }
 
 type replyMsg struct {
@@ -96,7 +96,7 @@ type EndNameInfo struct {
 // no reply was received from the server.
 func (e *ClientEnd) Call(svcMeth string, args any, reply any) bool {
 	req := reqMsg{}
-	req.endname = e.endname
+	req.clientEndName = e.endname
 	req.svcMeth = svcMeth
 	req.argsType = reflect.TypeOf(args)
 	req.replyCh = make(chan replyMsg)
@@ -221,11 +221,17 @@ func (rn *Network) IsLongDelays() bool {
 func (rn *Network) readEndNameInfo(endname any) EndNameInfo {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
+	servername := rn.connections[endname]
+	var server *Server
+	if servername != nil {
+		server = rn.servers[servername]
+	}
 	return EndNameInfo{
 		enabled:               rn.enabled[endname],
-		serverName:            rn.connections[endname],
+		serverName:            servername,
 		networkReliable:       rn.reliable,
 		networkLongReordering: rn.longReordering,
+		server:                server,
 	}
 }
 
@@ -240,7 +246,7 @@ func (rn *Network) isServerDead(endname any, servername any, server *Server) boo
 }
 
 func (rn *Network) processReq(req reqMsg) {
-	endnameInfo := rn.readEndNameInfo(req.endname)
+	endnameInfo := rn.readEndNameInfo(req.clientEndName)
 
 	if endnameInfo.enabled && endnameInfo.serverName != nil && endnameInfo.server != nil {
 		if endnameInfo.networkReliable == false {
@@ -261,7 +267,6 @@ func (rn *Network) processReq(req reqMsg) {
 		// failure reply.
 		ech := make(chan replyMsg)
 		go func() {
-			// FROMHERE:
 			r := endnameInfo.server.dispatch(req)
 			ech <- r
 		}()
@@ -277,7 +282,7 @@ func (rn *Network) processReq(req reqMsg) {
 			case reply = <-ech:
 				replyOK = true
 			case <-time.After(100 * time.Millisecond):
-				serverDead = rn.isServerDead(req.endname, endnameInfo.serverName, endnameInfo.server)
+				serverDead = rn.isServerDead(req.clientEndName, endnameInfo.serverName, endnameInfo.server)
 				if serverDead {
 					go func() {
 						<-ech // drain channel to let the goroutine created earlier terminate
@@ -292,7 +297,7 @@ func (rn *Network) processReq(req reqMsg) {
 		// to an Append, but the server persisted the update
 		// into the old Persister. config.go is careful to call
 		// DeleteServer() before superseding the Persister.
-		serverDead = rn.isServerDead(req.endname, endnameInfo.serverName, endnameInfo.server)
+		serverDead = rn.isServerDead(req.clientEndName, endnameInfo.serverName, endnameInfo.server)
 
 		if replyOK == false || serverDead == true {
 			// server was killed while we were waiting; return error.
@@ -460,7 +465,6 @@ func (rs *Server) dispatch(req reqMsg) replyMsg {
 	if ok {
 		return service.dispatch(methodName, req)
 	} else {
-		// FROMHERE:
 		choices := []string{}
 		for k := range rs.services {
 			choices = append(choices, k)
