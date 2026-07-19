@@ -83,6 +83,14 @@ type ClientEnd struct {
 	done    chan struct{} // closed when Network is cleaned up.
 }
 
+type EndNameInfo struct {
+	enabled        bool
+	serverName     any
+	server         *Server
+	reliable       bool
+	longReordering bool
+}
+
 // Send an RPC, wait for the reply.
 // the return value indicates success, false means that
 // no reply was received from the server.
@@ -160,6 +168,7 @@ func MakeNetwork() *Network {
 			case xreq := <-rn.endCh:
 				rn.count.Add(1)
 				rn.bytes.Add(int64(len(xreq.args)))
+				// FROMHERE:
 				go rn.processReq(xreq)
 			case <-rn.done:
 				return
@@ -209,20 +218,15 @@ func (rn *Network) IsLongDelays() bool {
 	return rn.longDelays
 }
 
-func (rn *Network) readEndnameInfo(endname any) (enabled bool,
-	servername any, server *Server, reliable bool, longreordering bool,
-) {
+func (rn *Network) readEndNameInfo(endname any) EndNameInfo {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
-
-	enabled = rn.enabled[endname]
-	servername = rn.connections[endname]
-	if servername != nil {
-		server = rn.servers[servername]
+	return EndNameInfo{
+		enabled:        rn.enabled[endname],
+		serverName:     rn.connections[endname],
+		reliable:       rn.reliable,
+		longReordering: rn.longReordering,
 	}
-	reliable = rn.reliable
-	longreordering = rn.longReordering
-	return
 }
 
 func (rn *Network) isServerDead(endname any, servername any, server *Server) bool {
@@ -236,16 +240,16 @@ func (rn *Network) isServerDead(endname any, servername any, server *Server) boo
 }
 
 func (rn *Network) processReq(req reqMsg) {
-	enabled, servername, server, reliable, longreordering := rn.readEndnameInfo(req.endname)
+	endnameInfo := rn.readEndNameInfo(req.endname)
 
-	if enabled && servername != nil && server != nil {
-		if reliable == false {
+	if endnameInfo.enabled && endnameInfo.serverName != nil && endnameInfo.server != nil {
+		if endnameInfo.reliable == false {
 			// short delay
 			ms := (rand.Int() % SHORTDELAY)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 
-		if reliable == false && (rand.Int()%1000) < 100 {
+		if endnameInfo.reliable == false && (rand.Int()%1000) < 100 {
 			// drop the request, return as if timeout
 			req.replyCh <- replyMsg{false, nil}
 			return
@@ -257,7 +261,7 @@ func (rn *Network) processReq(req reqMsg) {
 		// failure reply.
 		ech := make(chan replyMsg)
 		go func() {
-			r := server.dispatch(req)
+			r := endnameInfo.server.dispatch(req)
 			ech <- r
 		}()
 
@@ -272,7 +276,7 @@ func (rn *Network) processReq(req reqMsg) {
 			case reply = <-ech:
 				replyOK = true
 			case <-time.After(100 * time.Millisecond):
-				serverDead = rn.isServerDead(req.endname, servername, server)
+				serverDead = rn.isServerDead(req.endname, endnameInfo.serverName, endnameInfo.server)
 				if serverDead {
 					go func() {
 						<-ech // drain channel to let the goroutine created earlier terminate
@@ -287,15 +291,15 @@ func (rn *Network) processReq(req reqMsg) {
 		// to an Append, but the server persisted the update
 		// into the old Persister. config.go is careful to call
 		// DeleteServer() before superseding the Persister.
-		serverDead = rn.isServerDead(req.endname, servername, server)
+		serverDead = rn.isServerDead(req.endname, endnameInfo.serverName, endnameInfo.server)
 
 		if replyOK == false || serverDead == true {
 			// server was killed while we were waiting; return error.
 			req.replyCh <- replyMsg{false, nil}
-		} else if reliable == false && (rand.Int()%1000) < 100 {
+		} else if endnameInfo.reliable == false && (rand.Int()%1000) < 100 {
 			// drop the reply, return as if timeout
 			req.replyCh <- replyMsg{false, nil}
-		} else if longreordering == true && rand.Intn(900) < 600 {
+		} else if endnameInfo.longReordering == true && rand.Intn(900) < 600 {
 			// delay the response for a while
 			ms := 200 + rand.Intn(1+rand.Intn(2000))
 			// Russ points out that this timer arrangement will decrease
