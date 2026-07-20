@@ -168,7 +168,6 @@ func MakeNetwork() *Network {
 			case xreq := <-rn.endCh:
 				rn.count.Add(1)
 				rn.bytes.Add(int64(len(xreq.args)))
-				// FROMHERE:
 				go rn.processReq(xreq)
 			case <-rn.done:
 				return
